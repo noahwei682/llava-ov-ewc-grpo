@@ -34,7 +34,16 @@ def custom_correctness_reward_func(prompts: List[Dict],
     """
     responses = [completion[0]['content'] for completion in completions]
     extracted_responses = [extract_xml_answer(r) for r in responses]
-    return [1 if a in r else 0.0 for r, a in zip(extracted_responses, answer)]
+    
+    # 确保答案格式正确
+    formatted_answers = []
+    for a in answer:
+        # 如果答案中有"####"标记，提取实际答案
+        if "####" in a:
+            a = a.split("####")[1].strip()
+        formatted_answers.append(a)
+    
+    return [1 if a in r else 0.0 for r, a in zip(extracted_responses, formatted_answers)]
 
 @dataclass
 class GRPOTrainingArguments(TrainingArguments):
@@ -226,17 +235,22 @@ class TextGRPOTrainer(Trainer):
         for ids in input_ids:
             # Decode the full prompt
             full_text = self.tokenizer.decode(ids, skip_special_tokens=True)
-            # Split into messages
-            messages = []
-            answer = None
-            for part in full_text.split('\n'):
-                if part.startswith('<|system|>'):
-                    messages.append({"role": "system", "content": part.replace('<|system|>', '').strip()})
-                elif part.startswith('<|user|>'):
-                    messages.append({"role": "user", "content": part.replace('<|user|>', '').strip()})
-                elif part.startswith('<|assistant|>'):
-                    answer = part.replace('<|assistant|>', '').strip()
-                    messages.append({"role": "assistant", "content": answer})
+            # 解析新的格式，匹配<user_query>和<answer>标签
+            user_query = ""
+            answer = ""
+            if "<user_query>" in full_text and "</user_query>" in full_text:
+                user_query = full_text.split("<user_query>")[1].split("</user_query>")[0].strip()
+            if "<answer>" in full_text and "</answer>" in full_text:
+                answer = full_text.split("<answer>")[1].split("</answer>")[0].strip()
+            
+            # 构建消息格式
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_query}
+            ]
+            if answer:
+                messages.append({"role": "assistant", "content": answer})
+            
             prompts.append(messages)
             answers.append(answer)
         
@@ -414,8 +428,8 @@ def train():
         """
         将数据格式化为训练所需的格式
         """
-        # 例子中包含"prompt"和"answer"字段
-        text = f"{SYSTEM_PROMPT}\n<user_query>\n{example['prompt']}\n</user_query>\n\n<answer>\n{example['answer']}\n</answer>"
+        # GSM8K数据集使用'question'和'answer'字段，而不是'prompt'
+        text = f"{SYSTEM_PROMPT}\n<user_query>\n{example['question']}\n</user_query>\n\n<answer>\n{example['answer']}\n</answer>"
         
         max_length = model_args.model_max_length if model_args.model_max_length is not None else context_len
         
